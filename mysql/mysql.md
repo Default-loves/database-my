@@ -337,7 +337,7 @@ count(distinct left(email,7)) as L7 from User;
 
 在 MySQL 5.6 版本开始引入的 Online DDL，对这个操作流程做了优化，具体是插入数据到临时表的时候，允许正式表更新（即将MDL写锁，降级为MDL读锁），将更新操作记录到日志文件中，等临时表数据插入完毕，再根据日志文件同步最新数据。
 
-注意：重建表的时候，InnoDB 不会把整张表占满，每个页留了 1/16 给后续的更新用。也就是说，其实重建表之后不是“最”紧凑的，因此，可能重建表后，占用空间反而变大
+注意：重建表的时候，InnoDB 不会把整张表占满，每个页留了 1/16 给后续的更新用。也就是说，其实重建表之后不是“最”紧凑的，因此，重建表后，可能占用空间反而变大
 
 **一些语句的区分**
 
@@ -439,7 +439,7 @@ select VARIABLE_VALUE into @b from performance_schema.session_status where varia
 select @b-@a;
 ```
 
-`number_of_tep_files`指示使用了多少临时文件
+当中的`number_of_tep_files`指示使用了多少临时文件，如果为0，则只是内存排序，否则使用了临时文件辅助排序
 
 #### 全字段排序
 
@@ -448,27 +448,31 @@ select @b-@a;
 #### rowid排序
 
 如果一行的字段有很多的话，那么内存中能够放入的行数会很少，要分成为很多个临时的文件，排序的性能很差，因此可以设置
-`SET max_length_for_sort_data = 16`,控制了用于排序的行数据的长度，如果超过了这个长度，那么进入sort buffer的字段只有主键和排序字段，最后排好序后需要进行回表查找完整的数据，所以此时的`select @b-@a`需要增加相应的行数
+`SET max_length_for_sort_data = 16`,控制了用于排序的行数据的长度，如果超过了这个长度，那么进入sort buffer的字段只有主键和排序字段，最后排好序后需要进行回表查找完整的数据，所以通过上面计算的`select @b-@a`需要额外增加回表的行数
 
-#### 全字段排序和rowid排序
+#### 全字段排序 VS rowid排序
 
 - 对于InnoDB表来说，全字段排序能够减少磁盘的访问，因此会被优先选择
-- 对于内存表来说，rowid排序的回表只是简单地根据数据行的位置，直接访问内存得到数据，并不会访问磁盘，因此使用rowid排序
+- 对于内存表来说，rowid排序的回表只是简单地根据数据行的位置，直接访问内存得到数据，并不会访问磁盘，因此对于只有内存操作来说，使用rowid排序更佳
 
 #### 避免排序
 
-- 如果有联合索引，那么可以避免排序，只需要在联合索引进行检索，回表查找相应数据按照顺序记录数据就可以(Using index condition)
-- 如果联合索引实现了覆盖索引，那么直接在联合索引处就能够获取足够的信息，不需要回表(Using index)
+- 如果有联合索引，那么可以避免排序，只需要在联合索引进行检索，回表查找相应数据按照顺序记录数据就可以(Using index condition)。比如有索引(city, name)，查询语句`select * from t where city = "guangzhou" order by name desc`
+- 如果查询语句有覆盖索引，那么直接在联合索引处就能够获取足够的信息，不需要回表(Using index)，即查询语句：`select city, name, age from t  where city = "guangzhou" order by name desc`，而且有索引(city, name, age)，那么查询不需要回表
 
-#### 有覆盖索引的排序
+#### 额外的例子
 
-> `select * from t where city in ("杭州","苏州") ordr by name limit 100;`，有覆盖索引(city,name)
+> 查询语句：select * from t where city in ("杭州","苏州") ordr by name limit 100;
+>
+> 有联合索引(city,name)
 
-- 执行 select * from t where city=“杭州” order by name limit 100; 这个语句是不需要排序的，客户端用一个长度为 100 的内存数组 A 保存结果。
-- 执行 select * from t where city=“苏州” order by name limit 100; 用相同的方法，假设结果被存进了内存数组 B。
-- 现在 A 和 B 是两个有序数组，然后你可以用归并排序的思想，得到 name 最小的前 100 值，就是我们需要的结果了。
+那么执行过程如下所示：
 
+1. 执行 select * from t where city=“杭州” order by name limit 100; 这个语句是不需要排序的，客户端用一个长度为 100 的内存数组 A 保存结果。
+2. 执行 select * from t where city=“苏州” order by name limit 100; 用相同的方法，假设结果被存进了内存数组 B。
+3. 现在 A 和 B 是两个有序数组，然后你可以用归并排序的思想，得到 name 最小的前 100 值，就是我们需要的结果了。
 
+对于explain中的Extra，如果显示：`Using filesort`，则表示使用了排序
 
 ### count操作
 
@@ -510,6 +514,8 @@ InnoDB执行count操作需要将数据从存储引擎一行行读取到Server层
 
 ### 随机数
 
+获取随机数，可以使用的语句是：`select word from words order by rand() limit 3;`，需要注意的是，这个操作是比较繁琐的，而且也不推荐使用
+
 - `order by rand()`使用了内存临时表(Using temporary)，内存临时表排序的时候是使用rowid排序方法
 - `tmp_table_size`：内存临时表的大小，默认是16M，如果临时表大小超过了`tmp_table_size`，那么内存临时表就会转成磁盘临时表
 
@@ -527,6 +533,7 @@ set @sql = concat("select * from t limit ", @Y, ",1");
 prepare stmt from @sql;
 execute stmt;
 DEALLOCATE prepare stmt;
+
 取三个
 mysql> select count(*) into @C from t;
 set @Y1 = floor(@C * rand());
@@ -534,7 +541,13 @@ set @Y2 = floor(@C * rand());
 set @Y3 = floor(@C * rand());
 set @M = max(@Y1,@Y2,@Y3)
 set @N = min(@Y1,@Y2,@Y3)
-select * from t limit N, M-N+1;
+
+select * from (
+	select * from t limit N, M-N+1
+) a
+where a.id in (@Y1, @Y2, @Y3)
+这样整体的扫描行数是 C + M + 3;
+
 ```
 
 ------
@@ -585,7 +598,7 @@ select * from t ...
 ##### 等MDL锁
 
 1. show processlist看到State是“Waiting for table metadata lock"
-2. 查找相应的pid，`select blocking_pid from sys.schema_table_lock_waits;`
+2. 查找阻塞的pid，`select blocking_pid from sys.schema_table_lock_waits;`，需要注意的是，MySQL 启动时需要设置 performance_schema=on
 3. KILL PID
 
 ##### 等Flush
@@ -600,11 +613,17 @@ select * from t ...
 2. 该命令需要加读锁，如果已经有一个事务在这行持有一个写锁，那么select语句就会被阻塞
 3. 查找这行持有写锁的信息：mysql> select * from t sys.innodb_lock_waits where locked_table=`'test'.'t'`\G
 4. 可以看到“blocking_pid"就是阻塞的pid
-5. KILL PID
+5. 将持有写锁的pid杀掉：KILL PID
 
 #### 查询慢
 
-##### one
+##### 例子1
+
+`select * from t where id=1;`执行慢
+
+`select * from t where id=1 lock in share mode;`执行反而快
+
+场景如下：
 
 | session A                                      | session B                                 |
 | ---------------------------------------------- | ----------------------------------------- |
@@ -614,18 +633,19 @@ select * from t ...
 | select * from t where id=1 lock in share mode; |                                           |
 
 - lock in share mode是当前读，会直接读到c的最新值
-- 而普通的是一致性读，需要从c最新的值开始，一直undo执行了100次后，将1返回，执行慢
+- 而普通的是一致性读，需要从c最新的值开始，一直undo执行了100次后，才能将数据返回，执行慢
 
-##### two
+##### 例子2
 
-- a字段定义为varchar(10),执行`mysql> select * from table_a where b='1234567890abcd';`
-- mysql会将字符串截断为10个char的长度，如果表中N行，由于是select*，所以需要回表N次，但是每次查出整行，到server层一判断发现a字段不相同，最终结果返回空，如果N很大的话，那么花费的时间很多
+b字段定义为varchar(10)，且表中有10万行的b值为“1234567890”，执行语句`mysql> select * from table_a where b='1234567890abcd';`，这个语句执行很慢，原因是
+
+mysql会将字符串截断为10个char的长度，由于是select*，所以需要回表10万次，但是每次查出整行，到server层一判断发现b字段不相同，最终结果返回空，如果N很大的话，那么花费的时间很多
 
 
 
 ### 避免对字段进行函数操作
 
-对索引字段做函数操作，可能会破坏索引值的有序性，因此优化器就决定放弃走树搜索功能，查询速度很慢
+对索引字段做函数操作，可能会破坏索引值的有序性，因此优化器就决定放弃走树搜索功能，导致的结果就是查询速度很慢
 
 #### 对字段做了函数操作
 
@@ -642,19 +662,89 @@ select * from t ...
 #### 隐式字符编码转换
 
 1. `select d.* from tradelog l, trade_detail d where d.tradeid=l.tradeid and l.id=2;`
+
 2. 由于表d的字符集是utf8，而表l的字符集是utf8mb4，因此上面对字段进行了函数操作
-3. 优化方法
-   - 把trade_detail表中的tradeid字段的字符集修改为utf8mb4： `alter table trade_detail modify tradeid varchar(32) CHARACTER SET     utf8mb4 default null;`
-   - `select d.* from tradelog l , trade_detail d where d.tradeid=CONVERT(l.tradeid USING utf8) and l.id=2; `
+
+
+**优化方法**
+
+- 把trade_detail表中的tradeid字段的字符集修改为utf8mb4： `alter table trade_detail modify tradeid varchar(32) CHARACTER SET     utf8mb4 default null;`
+- `select d.* from tradelog l , trade_detail d where d.tradeid=CONVERT(l.tradeid USING utf8) and l.id=2; `
+
+
+
+### 幻读
+
+可重复读事务隔离级别下，会存在幻读的情况。幻读指的是在一个事务中的两次查询，第二次查询查到了第一次查询不存在的数据行。
+
+需要注意的是，对于普通的读是快照读，是不存在幻读的，而对于“当前读”，才会出现幻读。而且幻读仅仅指看到新插入的行，由于更新操作而导致的查询到新数据行不称为幻读。
+
+
+
+InnoDB解决幻读的方式是使用间隙锁，用来锁行与行之间的间隙，从而阻塞其他事务的插入操作
+
+间隙锁和行锁合称 next-key lock，每个 next-key lock 是前开后闭区间。
+
+但是引入了间隙锁，会导致死锁问题，比如：
+
+| session A                                           | session B                                           |
+| --------------------------------------------------- | --------------------------------------------------- |
+| begin;<br />select * from t where id=10 for update; |                                                     |
+|                                                     | begin;<br />select * from t where id=10 for update; |
+|                                                     | insert into t values(10, 10, 10);(阻塞)             |
+| insert into t values(10, 10, 10);(阻塞)             |                                                     |
+|                                                     |                                                     |
+
+
+
+```mysql
+session A 执行 select … for update 语句，由于 id=10 这一行并不存在，因此会加上间隙锁 (5,11);
+session B 执行 select … for update 语句，同样会加上间隙锁 (5,11)，间隙锁之间不会冲突，因此这个语句可以执行成功；
+session B 试图插入一行(10, 10, 10)，被 session A 的间隙锁挡住了，只好进入等待；
+session A 试图插入一行(10, 10, 10)，被 session B 的间隙锁挡住了。
+至此，形成了死锁，如果开启了死锁检测的话，SessionA会马上被检测然后返回错误，从而解除死锁
+```
+
+间隙锁只存在于可重复读隔离界别，为了解决幻读可以将事务隔离级别设置为读提交，同时为了解决可能出现的数据和日志不一致问题，需要设置binlog_format=row
+
+如果读提交隔离级别够用，也就是说，业务不需要可重复读的保证，这样考虑到读提交下操作数据的锁范围更小（没有间隙锁），使用这个配置是合理的。当然，配置是否合理，跟业务场景有关，需要具体问题具体分析
+
+
+
+### 出现问题时临时方案
+
+#### 连接过多
+
+当报错提示“Too many connections”时，增加`max_connections`的值，但是可能会导致MySql负载过大，破坏稳定性。更推荐的做法是将那些建立了连接但是并没有执行操作的（状态为Sleep）、无事务的连接杀死，是否有事务通过命令查看`select * from information_schema.innodb_trx`，杀死连接通过`kill connection + id`
+
+当连接被MySql服务器杀死后，客户端在下一次请求的时候，才会提示错误：`ERROR 2013 (HY000): Lost connection to MySQL server during query”`，客户端需要重新建立连接，然后使用新的连接发送请求
+
+#### 慢查询
+
+1. 缺少索引，通过Online DDL马上添加索引，对于一主一从，可以进行如下操作：
+   1. 在备库 B 上执行 set sql_log_bin=off，也就是不写 binlog，然后执行 alter table 语句加上索引；
+   2. 执行主备切换；
+   3. 这时候主库是 B，备库是 A。在 A 上执行 set sql_log_bin=off，然后执行 alter table 语句加上索引。
+2. 选错索引或者语句没有写好，通过query_rewrite功能，增加`force index`
+
+#### QPS增加
+
+1. 一种是由全新业务的 bug 导致的。假设你的 DB 运维是比较规范的，也就是说白名单是一个个加的。这种情况下，如果你能够确定业务方会下掉这个功能，只是时间上没那么快，那么就可以从数据库端直接把白名单去掉。
+2. 如果这个新功能使用的是单独的数据库用户，可以用管理员账号把这个用户删掉，然后断开现有连接。这样，这个新功能的连接不成功，由它引发的 QPS 就会变成 0。
+3. 如果这个新增的功能跟主体功能是部署在一起的，那么我们只能通过处理语句来限制。这时，我们可以使用上面提到的查询重写功能，把压力最大的 SQL 语句直接重写成"select 1"返回，不过不一定有效，因为一般来说不会只有一类SQL语句。
+
+
 
 
 
 ### union all 和union
 
-- 都是将两个select结果集进行合并，区别如下
+都是将两个select结果集进行合并，区别如下
+
 - 对于有重复的行，union会进行去重，而union all不会；
 - 对于有序的结果，union会重新进行排序，而union all只是简单拼接两个结果
-- 性能的话当然是union all更快
+
+性能的话当然是union all更快
 
 ### 反引号
 
@@ -663,15 +753,14 @@ mysql语句的表名和字段都会添加反引号(`\``)，目的是为了区分
 ```
 create table `test` (
     `id` bigint(20) NOT NULL AUTO_INCREMENT,
+    `rank` varchar(10)
     `desc` varchar(255)
 )
 ```
 
-### Command
+在8.0版本，rank是关键字，如果不加反引号会报错
 
-- `explain MySQL语句`：查看语句的执行情况
-- `force index(k)`：强制优化器使用索引k
-- `set long_query_time=0`：接下来的SQL语句都会记录到慢查询日志（slow log）中
+
 
 ### 优化
 
@@ -696,3 +785,257 @@ create table `test` (
 
 ### 多表join
 阿里巴巴java开发手册说，禁止超过3个表以上的join，而且需要确保索引存在。优化的方式是，拆分sql语句为多条简单的sql语句，整体上来看，多条简单sql语句效率会比一条多表join的sql语句要高
+
+
+
+### query_rewrite 功能
+
+MySQL 5.7 提供了 query_rewrite 功能，可以把输入的一条语句改写成另外一条语句
+
+通过执行`mysql-5.7.34-winx64\share\install_rewriter.sql`安装功能
+
+新增规则：`insert into query_rewrite.rewrite_rules(pattern, replacement, pattern_database) values ("select * from t where id + 1 = ?", "select * from t where id = ? - 1", "db1");`
+
+使规则生效：`call query_rewrite.flush_rewrite_rules();`
+
+在执行语句后，可以通过`show warnings`查看语句是否进行了变更
+
+
+
+### 误删除操作
+
+#### delete删除行
+
+使用`Flashback`工具通过修改binlog（生成逆转操作）来恢复原始数据，需要设置了`binlog_format=row 和 binlog_row_image=FULL`。最好的做法是在从库上使用工具回复原始数据，确认数据后在同步到主库
+
+#### drop table/ truncate table删除表、删除数据库
+
+前提条件是数据库有定时全量备份，并且实时备份binlog。具体的恢复就是全量备份+增量binlog日志的方式，比如，每日有进行一次全量的备份，中午12点时删了表，具体操作是：
+
+1. 获取最近一次的全量备份，应用到一个临时库中
+2. 获取0点以后的所有binlog，剔除掉删表的语句，具体：
+   1. 如果原实例没有使用 GTID 模式，只能在应用到包含 12 点的 binlog 文件的时候，先用–stop-position 参数执行到误操作之前的日志，然后再用–start-position 从误操作之后的日志继续执行；
+   2. 如果实例使用了 GTID 模式，就方便多了。假设误操作命令的 GTID 是 gtid1，那么只需要执行 set gtid_next=gtid1;begin;commit; 先把这个 GTID 加到临时实例的 GTID 集合，之后按顺序执行 binlog 的时候，就会自动跳过误操作的语句。
+3. 全部应用到临时库中，具体是`mysqlbinlog –database db_name`
+4. 将临时库中的表同步到MySql集群中
+
+不过，上述的操作不够快，主要原因是mysqlbinlog不能指定表，恢复的是整个数据库；其次，mysqlbinlog解析日志和应用日志的过程是单线程的
+
+更快的方法如下：
+
+1. 使用全量备份生成临时实例后，将其设置为线上备库的从库
+2. 设置`﻿change replication filter replicate_do_table = (tbl_name)`，表示只同步指定的表，然后`start slave`。需要注意的是，备库中需要有0点后的全部binlog，如果缺少了部分binlog，我们需要手工从其他binlog备份中获取并添加到备库中，具体：
+   1. 假设通过`show binlog`查看到备库中最小的binlog文件是master.000004，缺少了master.000003（判断是否缺少看binlog中的时间）
+   2. 从其他binlog备份中获取master.000003，放置到备库中
+   3. 打开日志文件中的`master.index`，添加`./master.000003`
+   4. 重启备库，使其识别到新的binlog
+3. 至此备库中已经存在全部的binlog了， 建立主备关系后即可
+
+再比如全量备份是一周一次，然后在周六的时候误操作了，那么需要重放6天的binlog，还是很慢，对于这种场景，可以尝试配置延迟同步的备库，在备库上执行`CHANGE MASTER TO MASTER_DELAY = N` 命令，可以指定这个备库持续保持跟主库有 N 秒的延迟。如果设置了3600，则表示备库和主库有1个小时的延迟，如果在1个小时内发现了误操作，操作是：
+
+1. 马上停止同步备库：`stop slave`
+2. 将主库中的binlog剔除掉误操作的日志，在备库重放，可以很快得获取到原始数据
+
+#### rm 删除数据库实例
+
+删除实例的影响是最小的，因为其不会影响数据的一致性，只会让整个集群压力增大，只需要重新启动数据库实例即可
+
+#### 预防措施
+
+1. 把 sql_safe_updates 参数设置为 on。这样一来，如果我们忘记在 delete 或者 update 语句中写 where 条件，或者 where 条件里面没有包含索引字段的话，这条语句的执行就会报错。
+2. 代码上线前，必须经过 SQL 审计。
+3. 只给开发配置DML，不允许drop/truncate
+4. 在删除数据表之前，先将表重命名为其他名字，比如添加统一删除后缀`_to_be_delete`，观察现场日志是否存在问题，不存在在问题则由DB统一删除具有统一后缀的表
+
+
+
+### 查询后的数据发送给客户端
+
+查询数据，MqSql是边读边发，意味着，如果客户端接收的慢，也会导致mysql发送得慢，具体如下：
+
+1. MySql的Server层从存储引擎中获取到一行数据后，将数据写入到`net buffer`，大小由`net_buffer_length`控制，默认是16K
+2. 重复获取行，写入`net buffer`，直到其写满，然后调用网络接口发送出去
+3. 如果发送成功，则清空`net buffer`，获取下一行数据
+4. 如果调用接口失败，返回EAGAIN 或 WSAEWOULDBLOCK，则表示本地网络栈(Socket send buffer)满了，需要等待，直到本地网络栈可写
+
+如果连接的状态显示“Sending to client”，就表示服务器端的网络栈写满了。
+
+如果客户端使用–quick 参数，会使用 mysql_use_result 方法。这个方法是读一行处理一行，如果业务逻辑处理比较慢，会导致客户端接受慢，继而导致mysql服务端本地网络栈堆积
+
+因此，如果数据量可以接收，一般使用mysql_store_result 这个接口，mysql客户端直接把查询结果保存到本地内存。
+
+#### 大数据量全表扫描的影响
+
+数据查询后会放置在Buffer Pool中，下一次相同的查询，可以直接返回而不用查询磁盘，提高了查询效率，Buffer Pool的命中率可以通过`show engine innodb status`中的信息查看
+
+InnoDB Buffer Pool的大小由`innodb_buffer_pool_size`进行控制，通常设置为可用物理内存的60%~80%。
+
+对于大数据量的查询，容易将Buffer Pool塞满，然后通过LRU算法淘汰掉常用的数据查询，导致Buffer Pool的命中率直线下降，磁盘压力增大，影响常用数据查询的效率。
+
+实际上，InnoDB对LRU算法进行了优化的，其将整条链表分成两部分，按照5:3的比例，分别是Young区域和Old区域，Old区域的头为OLD_HEAD。改进后的策略是：
+
+1. 如果查询的数据在Young区域，那么将数据移动到Head；
+2. 如果Buffer Pool满了，那么还是淘汰掉链条尾部的数据，将数据插入到OLD_HEAD
+3. 如果查询的数据在Old区域：
+   1. 数据在链表存在不足1秒，将数据移动到Old区域的Head，即OLD_HEAD;
+   2. 数据在链表存在超过了1秒，那么将数据移动到Young区域的头部，即HEAD;
+   3. 上述时间由参数`innodb_old_blocks_time`控制，默认是1000，单位是毫秒
+
+可以看到，对于大数据量的全表扫描，数据只会存在于Old区域，不会淘汰Young区域的数据，因此能够保证正常业务逻辑数据的查询
+
+
+
+### 用户和权限
+
+mysql中，用户名（user）+地址（host)才是一个用户，因此，`jy@localhost`和`jy@192.168.53.2`，是两个用户
+
+创建用户：`create user 'ua'@'%' identified by 'pa';`
+
+创建用户的操作，会在磁盘上，往 mysql.user 表里插入一行，由于没有指定权限，所以这行数据上所有表示权限的字段的值都是 N；内存里，往数组 acl_users 里插入一个 acl_user 对象，这个对象的 access 字段值为 0。
+
+#### 全局权限
+
+赋予全部权限：`grant all privileges on *.* to 'ua'@'%' with grant option;`
+
+这个 grant 命令做了两个动作：磁盘上，将 mysql.user 表里，用户’ua’@’%'这一行的所有表示权限的字段的值都修改为‘Y’；内存里，从数组 acl_users 中找到这个用户对应的对象，将 access 值（权限位）修改为二进制的“全 1”。
+
+收回用户的权限：`revoke all privileges on *.* from 'ua'@'%';`
+
+#### DB权限
+
+赋予权限：`grant all privileges on db1.* to 'ua'@'%' with grant option;`
+
+基于库的权限记录保存在 mysql.db 表中，在内存里则保存在数组 acl_dbs 中。
+
+这条 grant 命令做了如下两个动作：磁盘上，往 mysql.db 表中插入了一行记录，所有权限位字段设置为“Y”；内存里，增加一个对象到数组 acl_dbs 中，这个对象的权限位为“全 1”。
+
+#### 全局权限和DB权限
+
+对于全局权限，在线程建立连接后会将权限信息复制到线程对象中，因此对于全局权限进行`revoke`，不会影响已经建立的连接
+
+对于DB权限，线程是对全局变量acl_dbs进行判断，因此对于DB权限进行`revoke`，立即就会修改acl_dbs数组，因此会影响已经建立的连接
+
+而对于一开始就执行了`use db_test`，会将对数据库的权限写入到会话变量中，除非切换数据库，否则会话持有的对db_test的权限不会改变
+
+
+
+#### 表权限和列权限
+
+```
+create table db1.t1(id int, a int);
+// 表权限
+grant all privileges on db1.t1 to 'ua'@'%' with grant option;
+// 列权限
+GRANT SELECT(id), INSERT (id,a) ON mydb.mytbl TO 'ua'@'%' with grant option;
+```
+
+除了 db 级别的权限外，MySQL 支持更细粒度的表权限和列权限。其中，表权限定义存放在表 mysql.tables_priv 中，列权限定义存放在表 mysql.columns_priv 中。这两类权限，组合起来存放在内存的 hash 结构 column_priv_hash 中。
+
+和DB权限一样，这两类权限都会更新数据表，更新内存，会影响到所有的已建立的连接
+
+flush privileges 命令会清空 acl_users 数组，然后从 mysql.user 表中读取数据重新加载，重新构造一个 acl_users 数组。也就是说，以数据表中的数据为准，会将全局权限内存数组重新加载一遍。同样的，DB权限，表权限和列权限也做了相同的处理。
+
+因此，正常情况下，grant 命令之后，没有必要跟着执行 flush privileges 命令。
+
+flush privileges 使用场景：
+
+一般是非规范的操作，导致了数据表和内存数据不一致，比如直接修改了mysql.user的数据，那么需要通过语句更新内存的数据。
+
+
+
+### 节点健康检测
+
+建立对mysql节点的健康监测，当监测显示节点存在异常时，需要及时进行主备切换、节点下线等操作，常用的监测方法如下：
+
+#### select 1
+
+通过执行`select 1`，如果有返回则表表示节点正常，否则异常
+
+但是对于线程数量用尽，新的请求无法执行的情况，`select 1`还是会正常返回结果，无法及时获取到该节点的请求已阻塞
+
+#### 查表判断
+
+为了能够检测到InnoDB并发线程数太多而导致不可用的情况，需要执行访问表的语句，可以构建一个表`health_check`，里面只有一行数据，然后定期执行`select * from health_check`，看是否能够返回结果
+
+但是查表操作，无法判断binlog写满后，更新操作阻塞的情况，因此需要将查表语句修改为更新语句
+
+#### 更新判断
+
+表增加一个timestamp子字段，定期执行语句`update mysql.health_check set t_modified=now();`
+
+对于一主多从的mysql集群，需要同时监测主节点和从节点，如果在所有节点上执行以上语句，会导致数据不一致，进而导致主从同步停止，因此执行的语句需要增加节点的标识，即增加server_id字段
+
+```mysql
+mysql> CREATE TABLE `health_check` (
+  `id` int(11) NOT NULL,
+  `t_modified` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB;
+
+/* 检测命令 */
+insert into mysql.health_check(id, t_modified) values (@@server_id, now()) on duplicate key update t_modified=now();
+```
+
+需要注意的是，以上的方法（select 1、查表判断、更新判断）都是在mysql外部判断健康状况，存在一定的随机性，可能不能及时监测到
+
+#### 开启mysql的性能监控
+
+而如果对mysql本身的数据进行监测判断，则能够做到准确监测，MySQL 5.6 版本以后提供的 performance_schema 库，就在 file_summary_by_event_name 表里统计了每次 IO 请求的时间，如果开启了这个统计功能，会导致mysql的性能下降10%左右。
+
+开启redo log的时间监控：`mysql> update setup_instruments set ENABLED='YES', Timed='YES' where name like '%wait/io/file/innodb/innodb_log_file%';`
+
+监测数据，设定阈值，单次 IO 请求时间超过 200 毫秒属于异常：`mysql> select event_name,MAX_TIMER_WAIT  FROM performance_schema.file_summary_by_event_name where event_name in ('wait/io/file/innodb/innodb_log_file','wait/io/file/sql/binlog') and MAX_TIMER_WAIT>200*1000000000;`
+
+发现异常数据后，获取需要的信息，然后将之前的统计信息清空`mysql> truncate table performance_schema.file_summary_by_event_name;`，当下一次出现异常信息后，将值添加到监控累计值即可。
+
+#### 
+
+### 数据导出和导入
+
+比如将db1.t的数据复制到db2.t
+
+#### mysqldump
+
+导出：
+
+```mysql
+mysqldump -h$host -P$port -u$user --add-locks=0 --no-create-info --single-transaction  --set-gtid-purged=OFF db1 t --where="a>900" --result-file=/wasHome/client_tmp/t.sql
+
+--single-transaction：不对表db1.t加表锁
+–add-locks 设置为 0，表示在输出的文件结果里，不增加" LOCK TABLES t WRITE;" ；
+–no-create-info 的意思是，不需要导出表结构；
+–set-gtid-purged=off 表示的是，不输出跟 GTID 相关的信息；
+–skip-extended-insert：一行数据一行insert
+```
+
+下面的两种导入都可以
+
+导入：`mysql -h127.0.0.1 -P13000  -uroot db2 -e "source /client_tmp/t.sql"`
+
+导入：`mysql -h127.0.0.1 -P13000  -uroot db2  < /client_tmp/t.sql`
+
+#### CSV 
+
+导出：`select * from db1.t where a>900 into outfile '/server_tmp/t.csv';`
+
+导出文件的路径受secure_file_priv的控制：如果设置为 empty，表示不限制文件生成的位置，这是不安全的设置；如果设置为一个表示路径的字符串，就要求生成的文件只能放在这个指定的目录，或者它的子目录；如果设置为 NULL，就表示禁止在这个 MySQL 实例上执行 select … into outfile 操作。
+
+导入：`load data infile '/server_tmp/t.csv' into table db2.t;`
+
+select …into outfile 方法不会生成表结构文件，mysqldump 提供了一个–tab 参数，可以同时导出表结构定义文件和 csv 数据文件。
+
+`mysqldump -h$host -P$port -u$user ---single-transaction  --set-gtid-purged=OFF db1 t --where="a>900" --tab=$secure_file_priv`
+
+#### 物理拷贝
+
+以上的方法都是逻辑拷贝，即先生成源数据，然后将源数据导入到新表中。
+
+mysql提供了物理拷贝，即直接操作.ibd文件，这种方式最快，具体流程：
+
+1. 执行 create table r like t，创建一个相同表结构的空表；
+2. 执行 alter table r discard tablespace，这时候 r.ibd 文件会被删除；
+3. 执行 flush table t for export，这时候 db1 目录下会生成一个 t.cfg 文件；
+4. 在 db1 目录下执行 cp t.cfg r.cfg; cp t.ibd r.ibd；这两个命令（这里需要注意的是，拷贝得到的两个文件，MySQL 进程要有读写权限）；
+5. 执行 unlock tables，这时候 t.cfg 文件会被删除；
+6. 执行 alter table r import tablespace，将这个 r.ibd 文件作为表 r 的新的表空间，由于这个文件的数据内容和 t.ibd 是相同的，所以表 r 中就有了和表 t 相同的数据。
+
