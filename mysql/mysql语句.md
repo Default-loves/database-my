@@ -122,4 +122,7 @@ show engine innodb status
 ```mysql
 查看binlog：
 mysqlbinlog --no-defaults --database=ykt  --base64-output=decode-rows -v --start-datetime='2019-04-11 00:00:00' --stop-datetime='2021-07-17 15:00:00'  mysql-bin.000120 | less
+
+查看binlog：
+mysql > show binlog events in 'master.000001';
 ```

@@ -122,6 +122,12 @@ InnoDB刷脏页的速度会考虑两个因素，一个是脏页比例，一个�
 
 **查看binlog**：`mysqlbinlog -vv mysql-bin.000001 `
 
+binlog的格式：
+
+- statement：记录的是原始的sql语句，在主备同步的时候，可能会导致主备不一致
+- row：记录的是完整的数据修改内容，大小比statement大。这也是建议设置的，同时也方便误操作后修复数据
+- mix：上面两者的混合。
+
 #### 日志的记录过程
 
 比如执行`update t_user set count = count+1 where id = 3`这条更新语句，执行过程如下：
@@ -988,11 +994,9 @@ insert into mysql.health_check(id, t_modified) values (@@server_id, now()) on du
 
 发现异常数据后，获取需要的信息，然后将之前的统计信息清空`mysql> truncate table performance_schema.file_summary_by_event_name;`，当下一次出现异常信息后，将值添加到监控累计值即可。
 
-#### 
-
 ### 数据导出和导入
 
-比如将db1.t的数据复制到db2.t
+下面的例子是将db1.t的数据复制到db2.t
 
 #### mysqldump
 
@@ -1022,7 +1026,9 @@ mysqldump -h$host -P$port -u$user --add-locks=0 --no-create-info --single-transa
 
 导入：`load data infile '/server_tmp/t.csv' into table db2.t;`
 
-select …into outfile 方法不会生成表结构文件，mysqldump 提供了一个–tab 参数，可以同时导出表结构定义文件和 csv 数据文件。
+select …into outfile 方法不会生成表结构文件，只有数据
+
+mysqldump 提供了一个–tab 参数，可以同时导出表结构定义文件和 csv 数据文件，分别为t.sql和t.txt
 
 `mysqldump -h$host -P$port -u$user ---single-transaction  --set-gtid-purged=OFF db1 t --where="a>900" --tab=$secure_file_priv`
 
@@ -1030,7 +1036,7 @@ select …into outfile 方法不会生成表结构文件，mysqldump 提供了�
 
 以上的方法都是逻辑拷贝，即先生成源数据，然后将源数据导入到新表中。
 
-mysql提供了物理拷贝，即直接操作.ibd文件，这种方式最快，具体流程：
+mysql提供了物理拷贝，即直接操作.ibd文件，这种方式是最快的，具体流程：
 
 1. 执行 create table r like t，创建一个相同表结构的空表；
 2. 执行 alter table r discard tablespace，这时候 r.ibd 文件会被删除；
@@ -1038,4 +1044,156 @@ mysql提供了物理拷贝，即直接操作.ibd文件，这种方式最快，�
 4. 在 db1 目录下执行 cp t.cfg r.cfg; cp t.ibd r.ibd；这两个命令（这里需要注意的是，拷贝得到的两个文件，MySQL 进程要有读写权限）；
 5. 执行 unlock tables，这时候 t.cfg 文件会被删除；
 6. 执行 alter table r import tablespace，将这个 r.ibd 文件作为表 r 的新的表空间，由于这个文件的数据内容和 t.ibd 是相同的，所以表 r 中就有了和表 t 相同的数据。
+
+
+
+### 数据可靠性
+
+只要保证redo log和binlog持久化到磁盘，mysql数据库异常重启后，数据可以恢复，提供一定的数据可靠性。
+
+#### binlog的写入机制
+
+事务执行过程中，先将日志写入到binlog cache中，事务提交的时候，再把binlog cache写到硬盘的binlog文件中
+
+每个线程都有独立的binlog cache，在内存中占据一定的空间，大小由`binlog_cache_size`控制，从binlog cache到磁盘的binlog文件会有两个过程：
+
+- write：binlog cache到文件系统的page cache，所有线程的binlog cache 都共享同一个page cache binlog文件，此时还不是写磁盘，速度快
+- fsync：真正的写磁盘，此时才占用磁盘的IOPS，速度慢
+
+write 和 fsync 的时机，是由参数 sync_binlog 控制的：
+
+- sync_binlog=0 的时候，表示每次提交事务都只 write，不 fsync；
+- sync_binlog=1 的时候，表示每次提交事务都会执行 fsync；
+- sync_binlog=N(N>1) 的时候，表示每次提交事务都 write，但累积 N 个事务后才 fsync。
+
+#### redo log的写入机制
+
+日志先写到 redo log buffer，然后根据策略`innodb_flush_log_at_trx_commit`写入到磁盘：
+
+- 设置为 0 的时候，表示每次事务提交时都只是把 redo log 留在 redo log buffer 中 ;
+- 设置为 1 的时候，表示每次事务提交时都将 redo log 直接持久化到磁盘；
+- 设置为 2 的时候，表示每次事务提交时都只是把 redo log 写到 page cache。
+
+而且mysql后台有起一个定时任务，每秒执行，会将redo log buffer中的的日志，调用 write 写到文件系统的 page cache，然后调用 fsync 持久化到磁盘
+
+对于还没有提交的事务，redo log也可能会被持久化到磁盘，比如
+
+对于并发事务，事务A写了部分redo log到redo log buffer中，但是还没有提交，而事务B进行了提交，如果``innodb_flush_log_at_trx_commit = 1`，那么事务B会将redo log buffer中的全部内容持久化到磁盘，因此导致事务A还没提交但是持久化到了磁盘
+
+如果把 innodb_flush_log_at_trx_commit 设置成 1，那么 redo log 在 prepare 阶段就要持久化一次，在commit的时候也要提交一次
+
+#### 组提交机制
+
+即将多个需要持久化的操作在一次磁盘IO中完成，主要是指fsync操作，能够大幅降低磁盘的IOPS
+
+通常来说，写日志的大致过程是：
+
+redo log prepare持久化 -> binlog持久化 ->redo log commit持久化，
+
+而实际上由于持久化包括write和fsync两个操作，且两个操作一个快速，一个缓慢，细化后的写日志过程是：
+
+redo log prepare write -> binlog write -> redo log prepare fsync-> binlog fsync->redo log commit持久化
+
+redo log prepare fsync和binlog fsync操作都可以使用组提交机制，通常来说redo log prepare fsync执行相对较快，因此binlog fsync操作的日志数量还是较少，因此如果稍微“等待”一下，使得一次IO操作能够有更多的日志，可以提高mysql的IO性能，可以通过设置下面两个参数来实现。
+
+- binlog_group_commit_sync_delay 参数，表示延迟多少微秒后才调用 fsync;
+- binlog_group_commit_sync_no_delay_count 参数，表示累积多少次以后才调用 fsync。
+
+两个参数是或操作，只要有一个满足条件就会调用fsync
+
+
+
+### 主备同步
+
+通常来说，备库最好设置为只读（readonly），原因是：
+
+1. 备库可以执行一些读操作，设置为只读可以避免业务系统不小心发送了其他命令导致错误；
+2. 避免主备切换的时候，由于双写导致的数据不一致；
+3. 设置为只读，方便判断节点的状态
+
+同步的操作具体是：
+
+1. 在备库 B 上通过 change master 命令，设置主库 A 的 IP、端口、用户名、密码，以及要从哪个位置开始请求 binlog，这个位置包含文件名和日志偏移量。
+2. 在备库 B 上执行 start slave 命令，这时候备库会启动两个线程，就是图中的 io_thread 和 sql_thread。其中 io_thread 负责与主库建立连接。
+3. 主库 A 校验完用户名、密码后，开始按照备库 B 传过来的位置，从本地读取 binlog，发给 B。
+4. 备库 B 拿到 binlog 后，写到本地文件，称为中转日志（relay log）。
+5. sql_thread 读取中转日志，解析出日志里的命令，并执行。
+
+
+
+对于双M架构，即主节点和从节点互为主备，主备同步的过程：
+
+1. 节点A执行事务后生成的binlog，server id是A。
+2. 节点B接收到binlog后，重放，然后节点B生成的binlog中，server id还是A
+3. 节点A接收到的binlog，发现server id是A，即自己，将跳过这条binlog，只执行server id不是自己的binlog内容
+
+
+
+### 高可用
+
+高可用架构一般是双M架构，有一个备库随时等待选主为master，由于主从同步会存在延迟，延迟可以通过下面查看：
+
+```shell
+show slave status 
+它的返回结果里面会显示 seconds_behind_master，即为同步延迟的时间
+```
+
+主备延迟的原因：
+
+1. 备库所在的机器性能比主库差；
+2. 备库通常会分担业务系统的查询请求，如果查询请求导致备库压力过大，会导致备库执行主库的binlog效率低下；
+3. 大事务。因为事务提交的时候，才会生成binlog发送给备库，备库才会重放binlog，如果大事务执行时间长，那么将会导致长时间的主备延迟。典型的场景比如大数据量的delete，或者大表的DDL操作
+4. 备库的并行复制能力低。
+
+主备切换根据场景可以分为：可靠性优先策略和可用性优先策略
+
+可靠性优先策略：
+
+1. 判断备库 B 现在的 seconds_behind_master，如果小于某个值（比如 5 秒）继续下一步，否则持续重试这一步；
+2. 把主库 A 改成只读状态，即把 readonly 设置为 true；
+3. 判断备库 B 的 seconds_behind_master 的值，直到这个值变成 0 为止；
+4. 把备库 B 改成可读写状态，也就是把 readonly 设置为 false；
+5. 把业务请求切到备库 B。
+
+这种策略能够保证数据有较高的可靠性，但是会存在短暂的不可用（比如5秒）
+
+可用性优先策略：
+
+可用性优先策略是不等主备数据同步，直接把连接切到备库 B，并且让备库 B 可以读写，可能会导致部分数据不一致。
+
+通常来说，数据更为重要，因此最好使用可靠性优先策略
+
+
+
+### 备库并行复制能力
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
