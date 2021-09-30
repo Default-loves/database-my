@@ -419,7 +419,74 @@ MyISAM不支持行锁，InnoDB支持。行锁是在需要的时候才加上去�
 
 在分布式环境下，为了保证DB的高可用性和负载均衡，借鉴Master-Slave的思想，将读数据的SQL语句发送到Slave库中，将写数据的SQL语句发送到Master库中，Master和Slave保持数据的一致性，如果Master库挂掉了，则Slave临时成为Master
 
-由于不同的SQL语句发送给不同的服务器，对于Tomcat来说有点麻烦，所以在Tomcat和DB中间加入MySQL Proxy这个中间层处理SQL语句的分发
+由于不同的SQL语句要发送给不同的服务器，对于Tomcat来说有点麻烦，所以在Tomcat和DB中间加入MySQL Proxy这个中间层处理SQL语句的分发，这也是推荐使用的做法
+
+#### 主从延迟下的读写分离解决方案
+
+对于一主多从的架构，如果存在主从延迟，对业务逻辑更新后马上查询的场景，可能会导致查询到的是过期的数据，因为从库还没有同步完主库的数据。可以尝试的解决方案是：
+
+```shell
+强制走主库方案；
+sleep 方案；
+判断主备无延迟方案；
+配合 semi-sync 方案；
+等主库位点方案；
+等 GTID 方案
+```
+
+**强制走主库方案；**
+
+将请求区别对待，对于必须拿到最新数据的请求，强制发送到主库去执行；而对于其他请求则可以发送到从库查询
+
+**sleep 方案；**
+
+更新和查询之间，添加一条sleep语句
+
+**判断主备无延迟方案；**
+
+获取主备延迟时间，等待主备无延迟的时候才进行查询
+
+判断主备无延迟可以通过下面的方法：
+
+1. 通过show slave status 结果里的 seconds_behind_master 参数的值
+2. 通过show slave status 结果中的，Read_Master_Log_Pos（主库的位点）和Exec_Master_Log_Pos（从库已经执行的位点）的值
+3. 如果开启了GUID（Auto_Position=1），通过show slave status 结果中的，Retrieved_Gtid_Set（从库接收到的GTID集合）和Executed_Gtid_Set（从库执行的GTID集合）的值
+
+不过，可能主库已经执行完且相应了客户端，但是binlog还没有发送给从库，从库会误以为无主备延迟，会发送过期数据给客户端
+
+**配合 semi-sync 方案；**
+
+为了处理上述问题，semi-sync 做了这样的设计：
+
+1. 事务提交的时候，主库把 binlog 发给从库；
+2. 从库收到 binlog 以后，发回给主库一个 ack，表示收到了；
+3. 主库收到这个 ack 以后，才能给客户端返回“事务完成”的确认。
+
+不过semi-sync只适用于一主一从，对于一主多从的架构，还是会存在过期数据的问题
+
+而且当binlog更新很快的情况下，主备的GTID或者位点值总是不相等，容易导致过度等待的问题
+
+**等主库位点方案；**
+
+1. trx1 事务更新完成后，马上执行 show master status 得到当前主库执行到的 File 和 Position；
+2. 选定一个从库执行查询语句；
+3. 在从库上执行 select master_pos_wait(File, Position, 1)；
+4. 如果返回值是 >=0 的正整数，则在这个从库执行查询语句；
+5. 否则，到主库执行查询语句。
+
+语句`select master_pos_wait(file, pos[, timeout]);`的效果是从命令开始执行，到应用完 file 和 pos 表示的 binlog 位置，执行了多少事务。
+
+**等 GTID 方案**
+
+1. trx1 事务更新完成后，从返回包直接获取这个事务的 GTID，记为 gtid1；
+2. 选定一个从库执行查询语句；
+3. 在从库上执行 select wait_for_executed_gtid_set(gtid1, 1)；
+4. 如果返回值是 0，则在这个从库执行查询语句；
+5. 否则，到主库执行查询语句。
+
+` select wait_for_executed_gtid_set(gtid_set, 1);`这条命令的逻辑是：等待，直到这个库执行的事务中包含传入的 gtid_set，返回 0；超时返回 1。
+
+相比较于“等主库位点方案”，减少了一次查主库位点的查询
 
 
 
@@ -1049,7 +1116,7 @@ mysql提供了物理拷贝，即直接操作.ibd文件，这种方式是最快�
 
 ### 数据可靠性
 
-只要保证redo log和binlog持久化到磁盘，mysql数据库异常重启后，数据可以恢复，提供一定的数据可靠性。
+数据的可靠性依赖于日志的及时落盘，只要保证redo log和binlog持久化到磁盘，mysql数据库异常重启后，数据可以恢复，提供一定的数据可靠性。
 
 #### binlog的写入机制
 
@@ -1125,11 +1192,11 @@ redo log prepare fsync和binlog fsync操作都可以使用组提交机制，通�
 
 1. 节点A执行事务后生成的binlog，server id是A。
 2. 节点B接收到binlog后，重放，然后节点B生成的binlog中，server id还是A
-3. 节点A接收到的binlog，发现server id是A，即自己，将跳过这条binlog，只执行server id不是自己的binlog内容
+3. 节点A接收到的binlog，发现server id是A，即自己，将跳过这条binlog，即只执行server id不是自己的binlog内容
 
 
 
-### 高可用
+### 主备切换
 
 高可用架构一般是双M架构，有一个备库随时等待选主为master，由于主从同步会存在延迟，延迟可以通过下面查看：
 
@@ -1165,35 +1232,397 @@ show slave status
 
 
 
+#### 一主多从的主备切换
+
+假设主节点为A，从节点为B和C
+
+当主节点故障之后，需要将B设置为主节点，同时将A和C设置为B的从节点
+
+```shell
+在从节点上执行：
+CHANGE MASTER TO 
+MASTER_HOST=$host_name 
+MASTER_PORT=$port 
+MASTER_USER=$user_name 
+MASTER_PASSWORD=$password 
+MASTER_LOG_FILE=$master_log_name 
+MASTER_LOG_POS=$master_log_pos  
+
+最后两个是binlog的信息，一个是文件的名字，一个是开始同步的位置
+```
+
+同步位置的获取方法可以是：
+
+1. 等待一段时间，使B将中转日志全部处理完毕
+2. 在B上执行`show master status`，获取binlog的名字和最新pos
+3. 获取A故障的时间T
+4. 在节点B上执行，获取新的同步位置，即故障时间后的：`mysqlbinlog File --stop-datetime=T --start-datetime=T`
+
+当然了这样的方式得到的binlog pos是不准确的，可能同步过程中会报错，原因是pos后面的日志从节点已经执行过了，可以通过下面的操作跳过错误的日志：
+
+```shell
+1. 主动跳过事务
+set global sql_slave_skip_counter=1;
+start slave;
+
+2. 跳过指定错误类型
+set global slave_skip_errors = "1032,1062";
+start slave;
+其中：
+1062 错误是插入数据时唯一键冲突；
+1032 错误是删除数据时找不到行。
+注意：等主备关系稳定后，需要重新设置值为空
+```
+
+
+
+主备切换最好的做法是使用GTID（Global Transaction Identifier），为全局事务ID，GTID由两部分构成，GTID=server_uuid:gno
+
+server_uuid 是一个实例第一次启动时自动生成的，是一个全局唯一的值；
+
+gno 是一个整数，初始值是 1，每次提交事务的时候分配给这个事务，并加 1。
+
+
+
+**启用GTID**
+
+示例启动的时候加上参数 gtid_mode=on 和 enforce_gtid_consistency=on
+
+
+
+**GTID的使用**
+
+如果 gtid_next=automatic，代表使用默认值。这时，MySQL 就会把 server_uuid:gno 分配给这个事务。
+
+a. 记录 binlog 的时候，先记录一行 SET @@SESSION.GTID_NEXT=‘server_uuid:gno’;
+
+b. 把这个 GTID 加入本实例的 GTID 集合。
+
+如果 gtid_next 是一个指定的 GTID 的值，比如通过 set gtid_next='current_gtid’指定为 current_gtid，那么就有两种可能：
+
+a. 如果 current_gtid 已经存在于实例的 GTID 集合中，接下来执行的这个事务会直接被系统忽略；
+
+b. 如果 current_gtid 没有存在于实例的 GTID 集合中，就将这个 current_gtid 分配给接下来要执行的事务，也就是说系统不需要给这个事务生成新的 GTID，因此 gno 也不用加 1。
+
+每个 MySQL 实例都维护了一个 GTID 集合，用来对应“这个实例执行过的所有事务”。可以使用命令`show master status`查看
+
+比如从库A同步主库B的日志的时候，发现某条日志报错了，可以在从库A上操作：
+
+```mysql
+set gtid_next='aaaaaaaa-cccc-dddd-eeee-ffffffffffff:10';
+begin;
+commit;
+set gtid_next=automatic;
+start slave;
+
+其中gtid_next的值是报错日志的GTID
+前面三句的作用是给全局事务XXX设置为空事务，这样从库A同步日志的时候，就会自动跳过报错的日志了
+```
+
+
+
+#### 基于GTID的主备切换
+
+在从库上执行：
+
+```mysql
+CHANGE MASTER TO 
+MASTER_HOST=$host_name 
+MASTER_PORT=$port 
+MASTER_USER=$user_name 
+MASTER_PASSWORD=$password 
+master_auto_position=1 
+
+“master_auto_position=1 ”表示这个主备关系使用的是 GTID 协议
+```
+
+从库获取binlog的逻辑是：
+
+1. 实例 B 指定主库 A’，基于主备协议建立连接。
+2. 实例 B 把 set_b 发给主库 A’。
+3. 实例 A’算出 set_a 与 set_b 的差集，也就是所有存在于 set_a，但是不存在于 set_b 的 GTID 的集合，判断 A’本地是否包含了这个差集需要的所有 binlog 事务。
+   1. 如果不包含，表示 A’已经把实例 B 需要的 binlog 给删掉了，直接返回错误；
+   2. 如果确认全部包含，A’从自己的 binlog 文件里面，找出第一个不在 set_b 的事务，发给 B；之后就从这个事务开始，往后读文件，按顺序取 binlog 发给 B 去执行。
+
+
+
+
+
+### GTID和在线DDL
+
+如果想在线添加索引，但是又不想影响主库的性能，对于双M架构，即使在备库执行DDL操作，也会因为binlog的关系，将DDL操作发送给主库执行，影响主库的性能
+
+可以使用GTID来避免在线DDL对主库的性能影响，具体操作是：
+
+1. 主库执行`stop slave`
+2. 在从库上执行DDL操作
+3. 查找binlog获取到DDL对应的GTID，记为server_id:gno
+4. 到主库上执行
+
+```mysql
+set GTID_NEXT="server_id:gno";
+begin;
+commit;
+set gtid_next=automatic;
+start slave;
+```
+
+这样可以让从库的更新有 binlog 记录，同时也可以确保不会在主库上执行这条更新。
+
+接下来进行主备切换，按照上述流程再执行一遍即可
+
+
+
 ### 备库并行复制能力
 
+备库重放binlog的线程是sql_thread，其是一个单线程，执行效率低，可以将其改造为多线程，即将重放binlog分发给多个子线程worker，让worker并行重放binlog
+
+需要注意的是有些binlog不能够并行执行，需要按照执行次序执行，比如一个事务的多个操作，这些就只能串行执行，即放置到一个worker中
 
 
 
+MySQL 5.7 并行复制策略的思想是：
+
+- 同时处于 prepare 状态的事务，在备库执行时是可以并行的；
+- 处于 prepare 状态的事务，与处于 commit 状态的事务之间，在备库执行时也是可以并行的。
+
+之前介绍的组提交的参数`binlog_group_commit_sync_delay`和`binlog_group_commit_sync_no_delay_count`，是为了让write和fsync间隔更长的时间，从而减少binlog的写盘次数，降低IOPS，同时也能够增加“同时处于 prepare 状态的事务”，这样也增加了备库复制的并行度
+
+在MySQL 5.7.22，增加了基于WRITESET的并行复制策略，并且增加了参数`binlog-transaction-dependency-tracking`用来控制执行的策略：
+
+- COMMIT_ORDER，表示的就是前面介绍的，根据同时进入 prepare 和 commit 来判断是否可以并行的策略。
+- WRITESET，表示的是对于事务涉及更新的每一行，计算出这一行的 hash 值，组成集合 writeset。如果两个事务没有操作相同的行，也就是说它们的 writeset 没有交集，就可以并行。
+- WRITESET_SESSION，是在 WRITESET 的基础上多了一个约束，即在主库上同一个线程先后执行的两个事务，在备库执行的时候，要保证相同的先后顺序。
+
+WRITESET策略计算的hash值直接写入到binlog中，备库重放binlog的时候无需计算，直接获取binlog的hash值即可；由于不依赖binlog的行数据的内容，因此格式为statement也可以使用
 
 
 
+### kill操作
+
+- kill query 线程id：表示终止线程正在执行的语句
+- kill connection 线程id：表示终止线程的连接，如果线程有正在执行的语句，则会终止执行的语句
+
+当用户执行 kill query thread_id_B 时，MySQL 里处理 kill 命令的线程做了两件事：
+
+1. 把 session  的运行状态改成 THD::KILL_QUERY(将变量 killed 赋值为 THD::KILL_QUERY)；
+2. 给 session  的执行线程发一个信号。
 
 
 
+#### kill不掉的例子
+
+首先设置并发线程数量为2：`set global innodb_thread_concurrency=2`。然后执行下面的操作序列：
+
+![img](img/32e4341409fabfe271db3dd4c4df696e.png)
+
+可以看到：
+
+1. sesssion C 执行的时候被堵住了；
+2. 但是 session D 执行的 kill query C 命令却没什么效果，
+3. 直到 session E 执行了 kill connection 命令，才断开了 session C 的连接，提示“Lost connection to MySQL server during query”，
+4. 但是这时候，如果在 session E 中执行 show processlist，可以看到这个线程的 Commnad 列显示的是 Killed
+
+在这个例子里，线程的等待逻辑是这样的：每 10 毫秒判断一下是否可以进入 InnoDB 执行，如果不行，就调用 nanosleep 函数进入 sleep 状态，因此即使线程状态已经被修改为KILL_QUERY，但是还没有真正执行”终止“操作
+
+而当 session E 执行 kill connection 命令时，是这么做的
+
+1. 把 12 号线程状态设置为 KILL_CONNECTION；
+2. 关掉 12 号线程的网络连接。因为有这个操作，所以你会看到，这时候 session C 收到了断开连接的提示。
+
+> 而对于`show processlist`操作，规定了“如果一个线程的状态是KILL_CONNECTION，就把Command列显示成Killed。”
+
+因此可以看到，kill不掉的场景一般有两个：
+
+1. 线程虽然设置了状态，但是由于线程限制，没有进入InnoDB执行；
+2. 终止的逻辑耗时比较长，比如大事务操作、大表查询、DDL操作，由于需要回滚或者删除临时表/文件，导致终止逻辑比较久
+
+### 客户端操作
+
+在使用`mysql -uroot -p123456 test`建立连接的时候，假如一个数据库包含了很多表，比如上万个表，那么会导致连接建立很长时间，如图所示：
+
+![img](img/7e4666bfd580505180c77447d1f44c83.png)
+
+建立连接时客户端会执行下面的操作：
+
+1. 执行 show databases；
+2. 切到 db1 库，执行 show tables；
+3. 把这两个命令的结果用于构建一个本地的哈希表。
+
+目的是为了能够在客户端通过Tab自动补全，当数据库有很多表的时候，第三步会很耗时，客户端执行时间比较长
+
+解决办法也很简单：添加上参数`-A`即可
 
 
 
+#### -quick参数
+
+MySQL 客户端发送请求后，接收服务端返回结果的方式有两种：
+
+1. 本地缓存，也就是在本地开一片内存，先把结果存起来。如果你用 API 开发，对应的就是 mysql_store_result 方法。
+2. 不缓存，读一个处理一个。如果你用 API 开发，对应的就是 mysql_use_result 方法。
+
+默认是第一种，如果加上了参数`-quick`则会走第二种
+
+对于第二种方式，此时需要注意，如果客户端的数据执行慢，由于客户端缓冲区堆积会导致服务端发送数据阻塞，从而影响了服务器的性能
+
+一般使用这个参数是为了达到下面的目的：
+
+1. 跳过表名自动补全功能。
+2. mysql_store_result 需要申请本地内存来缓存查询结果，如果查询结果太大，会耗费较多的本地内存，可能会影响客户端本地机器的性能；
+3. 不会把执行命令记录到本地的命令历史文件。
+
+所以，–quick 参数，是让客户端变得更快。
 
 
 
+### 临时表
+
+临时表的特性：
+
+1. 建表语法是 create temporary table …
+2. 一个临时表只能被创建它的 session 访问，对其他线程不可见。所以， session A 创建的临时表 t，对于 session B 就是不可见的。
+3. 临时表可以与普通表同名。
+4. session A 内有同名的临时表和普通表的时候，show create 语句，以及增删改查语句访问的是临时表。
+5. show tables 命令不显示临时表。
+6. session结束后，临时表会被自动清理
+
+#### 在分库分表后的查询应用
+
+比如表user根据id分了1024个表，32个数据库（1个数据库对应32个表）对于根据id的查询（select v from ht where id=123456;），需要先在Proxy层总找到对应的表（id % 1024)，然后在子表中进行查询操作
+
+而对于非分片字段的查询，比如：
+
+`select v from ht where k >= M order by t_modified desc limit 100;`
+
+做法是：
+
+1. 选择一个相对空闲的数据库实例
+2. 在汇总库上创建一个临时表 temp_ht，表里包含三个字段 v、k、t_modified；
+3. 在各个分库上执行：`select v,k,t_modified from ht_x where k >= M order by t_modified desc limit 100;`
+4. 将分库的执行结果发送到汇总库的临时表temp_ht中
+5. 执行`select v from temp_ht order by t_modified desc limit 100; `得到最终的结果
+
+#### 临时表重名
+
+临时表在不同的session中可以重名，因为mysql在内存中会有一套机制区别不同的表，一个表对应一个table_def_key 
+
+一个普通表的 table_def_key 的值是由“库名 + 表名”得到的，所以如果你要在同一个库下创建两个同名的普通表，创建第二个表的过程中就会发现 table_def_key 已经存在了。
+
+而对于临时表，table_def_key 在“库名 + 表名”基础上，又加入了“server_id+thread_id”。也就是说，session A 和 sessionB 创建的两个临时表 t1，它们的 table_def_key 不同，磁盘文件名也不同，因此可以并存。
+
+#### 临时表的备库执行
+
+临时表的操作也会写binlog，MySQL 在记录 binlog 的时候，会把主库执行这个语句的线程 id 写到 binlog 中。这样，在备库的应用线程就能够知道执行每个语句的主库线程 id，并利用这个线程 id 来构造临时表的 table_def_key：
+
+session A 的临时表 t1，在备库的 table_def_key 就是：库名 +t1+“M 的 serverid”+“session A 的 thread_id”;
+
+session B 的临时表 t1，在备库的 table_def_key 就是 ：库名 +t1+“M 的 serverid”+“session B 的 thread_id”。
+
+因此临时表在备库执行不会有问题
 
 
 
+### 内存临时表
+
+会使用到内存临时表的场景：
+
+1. 如果语句执行过程可以一边读数据，一边直接得到结果，是不需要额外内存的，否则就需要额外的内存，来保存中间结果；
+2. 如果执行逻辑需要用到二维表特性，就会优先考虑使用临时表。比如我们的例子中，union 需要用到唯一索引约束， group by 还需要用到另外一个字段来存累积计数。
+
+例如union语句`(select 1000 as f) union (select id from t1 order by id desc limit 2);`，其执行流程：
+
+1. 会创建一个内存临时表，表中只有一个字段f，且f是主键
+2. 然后依次执行子查询1和子查询2添加到内存临时表中，由于union结果不包含重复结果，因此每次获取子查询2的结果都要进行唯一主键约束判断
 
 
 
+例如group by语句：`select id%10 as m, count(*) as c from t1 group by m;`
+
+1. 会创建一个内存临时表，表中有两个字段，m和c，m是主键
+2. 每次取出t1一行数据，计算id%10的值
+   - 如果临时表中存在值，则将c+1
+   - 否则，在临时表中插入一行数据，将c的值赋值为1
+3. 数据全部读取完后，根据m字段排序，返回给客户端
+
+group by 的优化——索引优化
+
+由于索引是有序的，因此进行group by的时候，无需临时表保存中间数据，而且也无需进行排序
+
+```mysql
+# 添加字段和对应的索引
+alter table t1 add column z int generated always as(id % 100), add index(z);
+
+# 查询语句变为
+select z, count(*) as c from t1 group by z;
+```
+
+group by 的优化——直接排序
+
+在 group by 语句中加入 SQL_BIG_RESULT 这个提示（hint），就可以告诉优化器：这个语句涉及的数据量很大，请直接用磁盘临时表，优化器一看，磁盘临时表是 B+ 树存储，存储效率不如数组来得高。所以，既然你告诉我数据量很大，那从磁盘空间考虑，还是直接用数组来存吧。因此，语句`select SQL_BIG_RESULT id%100 as m, count(*) as c from t1 group by m;`的执行情况如下：
+
+1. 创建一个sort buffer，其中有一个整形字段m
+2. 获取t1的数据，将id%100的结果保存到sort buffer中
+3. 根据sort buffer中的字段m进行排序，如果空间不足，则会使用磁盘临时表辅助排序
+4. 排序完成后，就得到一个有序数组
+5. 根据有序数组，按照顺序统计数字
+
+group by使用的建议：
+
+1. 如果对 group by 语句的结果没有排序要求，要在语句后面加 order by null；
+2. 尽量让 group by 过程用上表的索引，确认方法是 explain 结果里没有 Using temporary 和 Using filesort；
+3. 如果 group by 需要统计的数据量不大，尽量只使用内存临时表；也可以通过适当调大 tmp_table_size 参数，来避免用到磁盘临时表；
+4. 如果数据量实在太大，使用 SQL_BIG_RESULT 这个提示，来告诉优化器直接使用排序算法得到 group by 的结果。
 
 
 
+### 分区表
+
+```mysql
+CREATE TABLE `t` (
+  `ftime` datetime NOT NULL,
+  `c` int(11) DEFAULT NULL,
+  KEY (`ftime`)
+) ENGINE=InnoDB DEFAULT CHARSET=latin1
+PARTITION BY RANGE (YEAR(ftime))
+(PARTITION p_2017 VALUES LESS THAN (2017) ENGINE = InnoDB,
+ PARTITION p_2018 VALUES LESS THAN (2018) ENGINE = InnoDB,
+ PARTITION p_2019 VALUES LESS THAN (2019) ENGINE = InnoDB,
+PARTITION p_others VALUES LESS THAN MAXVALUE ENGINE = InnoDB);
+insert into t values('2017-4-1',1),('2018-4-1',1);
+```
+
+需要注意的是：对于InnoDB引擎来说，这是4个表，而对于Server层来说，这是1个表
 
 
 
+### 自增id用完
 
+#### 表主键id
 
+表定义的自增值达到上限后的逻辑是：再申请下一个 id 时，得到的值保持不变。这个上限值是（2^32 - 1），如果在建表的时候评估字段会超过这个值，需要设置字段类型为bigint unsigned（8个字节）
+
+如果表没有设置主键，InnoDB会为其添加一个不可见的，递增的row_id，row_id**的值由全局的dict_sys.row_id**变量进行维护，每次申请后会自增加1，row_id类型为6个字节，当达到最大值后，下个值将变为0，如果表中有row_id=0的数据，将覆盖数据，导致数据丢失
+
+#### Xid
+
+Xid 是由 server 层维护的。
+
+mysql在内存中维护了一个全局变量global_query_id，每次执行语句的之后会获取一个值赋值给请求的query_id，如果该请求是事务的第一个请求，还会将Xid赋值为query_id
+
+由于global_query_id是内存变量，每次mysql重启的时候，会初始化为0，不过由于其定义为8个字节，因此达到上限只存在理论的可能
+
+由于binlog在每次mysql重启的时候，都会重新生成binlog，因此可以保证每个binlog中的Xid是唯一的
+
+#### InnoDB trx_id
+
+事务id，存在于InnoDB引擎中，用于判断数据可见性。InnoDB 每一行数据都记录了更新它的 trx_id，当一个事务读到一行数据的时候，判断这个数据是否可见的方法，就是通过事务的一致性视图与这行数据的 trx_id 做对比。
+
+InnoDB 内部维护了一个 max_trx_id 全局变量，每次需要申请一个新的 trx_id 时，就获得 max_trx_id 的当前值，然后并将 max_trx_id 加 1。
+
+对于只读事务，InnoDB 并不会分配 trx_id
+
+#### thread_id
+
+系统保存了一个全局变量 thread_id_counter，每新建一个连接，就将 thread_id_counter 赋值给这个新连接的线程变量。
 

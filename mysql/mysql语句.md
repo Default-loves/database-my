@@ -125,4 +125,6 @@ mysqlbinlog --no-defaults --database=ykt  --base64-output=decode-rows -v --start
 
 查看binlog：
 mysql > show binlog events in 'master.000001';
+
+mysqlbinlog mysql-bin.00001 | more
 ```
