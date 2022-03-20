@@ -26,7 +26,10 @@ character-set-server=utf8
 default-storage-engine=INNODB
 ```
 
+注意：如果`datadir`配置的目录存在的话，那么需要删除掉，否则后面安装过程会报错
+
 ### 安装
+
 - 以管理员身份启动CMD
 - `mysqld -install`
 - 切换到MySQL目录，执行`mysqld --initialize --user=root --console`，结果包含了初始密码
