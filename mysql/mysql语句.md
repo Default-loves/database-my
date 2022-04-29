@@ -1,5 +1,21 @@
 
 
+### 参数变量
+
+```mysql
+查看变量值
+show VARIABLES LIKE 'sql_mode';
+select @@global.sql_mode;
+
+设置变量值
+set global sql_mode='xx_mode';
+set @@global.sql_mode='xx_mode';
+```
+
+
+
+
+
 ### 查询语句
 
 对字符串进行拼接
