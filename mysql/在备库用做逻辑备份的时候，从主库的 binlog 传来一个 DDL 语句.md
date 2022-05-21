@@ -1,6 +1,6 @@
 ### 在备库用–single-transaction 做逻辑备份的时候，如果从主库的 binlog 传来一个 DDL 语句会怎么样？
 
-假设这个 DDL 是针对表 t1 的， 这里我把备份过程中几个关键的语句列出来：
+假设这个 DDL 是针对表 t1 的， 这里我把备份过程中几个关键的语句列出来，下面的是mysqldump的内部细节：
 
 ```mysql
 Q1:SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
@@ -29,10 +29,7 @@ DDL 从主库传过来的时间按照效果不同，我打了四个时刻。题�
 
 参考答案如下：
 
-如果在 Q4 语句执行之前到达，现象：没有影响，备份拿到的是 DDL 后的表结构。
-
-如果在“时刻 2”到达，则表结构被改过，Q5 执行的时候，报 Table definition has changed, please retry transaction，现象：mysqldump 终止；
-
-如果在“时刻 2”和“时刻 3”之间到达，mysqldump 占着 t1 的 MDL 读锁，binlog 被阻塞，现象：主从延迟，直到 Q6 执行完成。
-
-从“时刻 4”开始，mysqldump 释放了 MDL 读锁，现象：没有影响，备份拿到的是 DDL 前的表结构。
+- 如果在 Q4 语句执行之前到达，现象：没有影响，备份拿到的是 DDL 后的表结构。
+- 如果在“时刻 2”到达，则表结构被改过，Q5 执行的时候，报 Table definition has changed, please retry transaction，现象：mysqldump 终止；
+- 如果在“时刻 2”和“时刻 3”之间到达，mysqldump 占着 t1 的 MDL 读锁，binlog 被阻塞，现象：主从延迟，直到 Q6 执行完成。
+- 从“时刻 4”开始，mysqldump 释放了 MDL 读锁，现象：没有影响，备份拿到的是 DDL 前的表结构。

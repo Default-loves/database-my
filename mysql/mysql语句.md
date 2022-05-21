@@ -14,6 +14,79 @@ set @@global.sql_mode='xx_mode';
 
 
 
+### 行转列、列转行
+
+```mysql
+SELECT name,
+  MAX(CASE WHEN subject='语文' THEN score ELSE 0 END) AS "语文",
+  MAX(CASE WHEN subject='数学' THEN score ELSE 0 END) AS "数学",
+  MAX(CASE WHEN subject='英语' THEN score ELSE 0 END) AS "英语"
+FROM student1
+GROUP BY name
+
+SELECT NAME,'语文' AS subject,MAX("语文") AS score
+FROM student2 GROUP BY NAME
+UNION
+SELECT NAME,'数学' AS subject,MAX("数学") AS score
+FROM student2 GROUP BY NAME
+UNION
+SELECT NAME,'英语' AS subject,MAX("英语") AS score
+FROM student2 GROUP BY NAME
+
+```
+
+
+
+
+
+### 函数
+
+```mysql
+# IF(expr1,expr2,expr3)
+# 如果expr1为TRUE，则为expr2，否则为expr3
+
+select employee_id , IF(employee_id%2=1 and name not like 'M%', salary , 0) AS bonus 
+from Employees 
+
+
+
+# case()
+# 枚举
+update salary
+set sex = (case sex
+               when 'm' then 'f'
+               else 'm'
+           end);
+
+update 班级表
+set 班级 = (case 班级
+                when 1 then 2
+                when 2 then 1
+                else 3
+           end);
+
+
+```
+
+
+
+### 删除重复记录，但保留id最小的一条
+
+```mysql
+Person 表:
++----+------------------+
+| id | email            |
++----+------------------+
+| 1  | john@example.com |
+| 2  | bob@example.com  |
+| 3  | john@example.com |
++----+------------------+
+
+delete a
+from Person a, Person b
+where a.email = b.email and a.id > b.id;
+```
+
 
 
 ### 查询语句
