@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="CompilerConfiguration">
+    <annotationProcessing>
+      <profile default="true" name="Default" enabled="true" />
+      <profile name="Maven default annotation processors profile" enabled="true">
+        <sourceOutputDir name="target/generated-sources/annotations" />
+        <sourceTestOutputDir name="target/generated-test-sources/test-annotations" />
+        <outputRelativeToContentRoot value="true" />
+        <module name="simple" />
+        <module name="redis-repository-demo" />
+        <module name="common" />
+        <module name="test" />
+        <module name="caching" />
+      </profile>
+    </annotationProcessing>
+    <bytecodeTargetLevel>
+      <module name="caching" target="11" />
+      <module name="common" target="8" />
+      <module name="redis-repository-demo" target="8" />
+      <module name="simple" target="8" />
+      <module name="Spring Data Redis" target="8" />
+      <module name="test" target="8" />
+    </bytecodeTargetLevel>
+  </component>
+  <component name="JavacSettings">
+    <option name="ADDITIONAL_OPTIONS_OVERRIDE">
+      <module name="Spring Data Redis" options="-parameters" />
+      <module name="caching" options="-parameters" />
+      <module name="common" options="-parameters" />
+      <module name="redis-repository-demo" options="-parameters" />
+      <module name="simple" options="-parameters" />
+      <module name="test" options="-parameters" />
+    </option>
+  </component>
+</project>

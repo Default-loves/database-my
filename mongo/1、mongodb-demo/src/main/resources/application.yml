@@ -1,0 +1,20 @@
+
+server:
+  port: 12340
+
+spring:
+  application:
+    name: mongo-test
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/db_example?serverTimezone=UTC&characterEncoding=utf-8
+    password: 123456
+    username: root
+  data:
+    mongodb:
+      uri:  mongodb://door:daoer#123@39.98.187.212:26001/device_db
+#      uri: mongodb://jy:123321132@172.16.60.223:27017/test
+      maxConnectionIdleTime: 1500
+      connectionsPerHost: 20
+      minConnectionsPerHost: 1
+      socketTimeout: 60000

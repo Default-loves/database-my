@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd" >
+<mapper namespace="com.junyi.mapper.ArticleMapper" >
+  <resultMap id="BaseResultMap" type="com.junyi.domain.Article" >
+    <id column="id" property="id" jdbcType="INTEGER" />
+    <result column="name" property="name" jdbcType="VARCHAR" />
+    <result column="text" property="text" jdbcType="VARCHAR" />
+    <result column="remark" property="remark" jdbcType="VARCHAR" />
+    <result column="money" property="money" jdbcType="INTEGER" />
+    <result column="create_time" property="createTime" jdbcType="TIMESTAMP" />
+    <result column="update_time" property="updateTime" jdbcType="TIMESTAMP" />
+  </resultMap>
+
+  <sql id="Base_Column_List" >
+    id, `name`, `text`, remark, money, create_time, update_time
+  </sql>
+
+  <delete id="delete" parameterType="java.lang.Integer" >
+    delete from article
+    where id = #{id,jdbcType=INTEGER}
+  </delete>
+
+  <insert id="insert" parameterType="com.junyi.domain.Article" useGeneratedKeys="true" keyColumn="id" keyProperty="id" >
+    insert into article
+    <trim prefix="(" suffix=")" suffixOverrides="," >
+      <if test="id != null" >
+        id,
+      </if>
+      <if test="name != null" >
+        `name`,
+      </if>
+      <if test="text != null" >
+        `text`,
+      </if>
+      <if test="remark != null" >
+        remark,
+      </if>
+      <if test="money != null" >
+        money,
+      </if>
+      <if test="createTime != null" >
+        create_time,
+      </if>
+      <if test="updateTime != null" >
+        update_time,
+      </if>
+    </trim>
+    <trim prefix="values (" suffix=")" suffixOverrides="," >
+      <if test="id != null" >
+        #{id,jdbcType=INTEGER},
+      </if>
+      <if test="name != null" >
+        #{name,jdbcType=VARCHAR},
+      </if>
+      <if test="text != null" >
+        #{text,jdbcType=VARCHAR},
+      </if>
+      <if test="remark != null" >
+        #{remark,jdbcType=VARCHAR},
+      </if>
+      <if test="money != null" >
+        #{money,jdbcType=INTEGER},
+      </if>
+      <if test="createTime != null" >
+        #{createTime,jdbcType=TIMESTAMP},
+      </if>
+      <if test="updateTime != null" >
+        #{updateTime,jdbcType=TIMESTAMP},
+      </if>
+    </trim>
+  </insert>
+
+  <update id="update" parameterType="com.junyi.domain.Article" >
+    update article
+    <set >
+      <if test="name != null" >
+        `name` = #{name,jdbcType=VARCHAR},
+      </if>
+      <if test="text != null" >
+        `text` = #{text,jdbcType=VARCHAR},
+      </if>
+      <if test="remark != null" >
+        remark = #{remark,jdbcType=VARCHAR},
+      </if>
+      <if test="money != null" >
+        money = #{money,jdbcType=INTEGER},
+      </if>
+      <if test="createTime != null" >
+        create_time = #{createTime,jdbcType=TIMESTAMP},
+      </if>
+      <if test="updateTime != null" >
+        update_time = #{updateTime,jdbcType=TIMESTAMP},
+      </if>
+    </set>
+    where id = #{id,jdbcType=INTEGER}
+  </update>
+
+  <select id="selectByPrimaryKey" resultMap="BaseResultMap" parameterType="java.lang.Integer" >
+    select
+    <include refid="Base_Column_List" />
+    from article
+    where id = #{id,jdbcType=INTEGER}
+  </select>
+
+  <select id="selectByName" parameterType="java.lang.String" resultMap="BaseResultMap">
+    select
+        <include refid="Base_Column_List" />
+    from article
+    where name like concat(#{name}, "%")
+  </select>
+
+  <select id="listAll" resultMap="BaseResultMap">
+    select
+        <include refid="Base_Column_List" />
+    from article
+  </select>
+</mapper>

@@ -1,15 +1,57 @@
 
 
-### 参数变量
+### 常用命令
 
 ```mysql
-查看变量值
+# 创建数据库
+mysql> create database db_example; 
+# 创建用户
+mysql> create user 'springuser'@'%' identified by '123456'; 
+# 授予权限-全部
+mysql> grant all on db_example.* to 'springuser'@'%'; 
+# 撤销权限
+mysql> revoke all on db_example.* from 'springuser'@'%';
+# 授予特定的权限
+mysql> grant select, insert, delete, update on db_example.* to 'springuser'@'%';
+
+# 查看表格的建表语句
+mysql> show create table <tablename>
+
+# 查看表的结构
+mysql> DESC <tablename>;
+
+# 删除表的所有数据
+truncate table student;
+
+
+# 查看配置加载的顺序，即查看使用的哪个 my.cnf
+mysql --help | grep 'Default options' -A 1
+
+# 查看语句的执行情况
+`explain MySQL语句`
+
+# 强制优化器使用索引k
+`force index(k)`
+
+# 接下来的SQL语句都会记录到慢查询日志（slow log）中
+`set long_query_time=0`
+
+# 查看InnoDB存储引擎的状态
+show engine innodb status
+
+# 查看客户端的连接：
+`show PROCESSLIST;`
+
+# 查看配置参数
 show VARIABLES LIKE 'sql_mode';
 select @@global.sql_mode;
 
-设置变量值
+# 设置配置参数
 set global sql_mode='xx_mode';
 set @@global.sql_mode='xx_mode';
+
+#查看数据文件所在的路径
+show global variables like "%datadir%";
 ```
 
 
@@ -74,6 +116,12 @@ set 班级 = (case 班级
 
 ```mysql
 Person 表:
+CREATE TABLE `Person`  (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `email` varchar(100)  DEFAULT NULL,
+  PRIMARY KEY (`id`) USING BTREE
+) ENGINE = InnoDB  CHARACTER SET = utf8;
+
 +----+------------------+
 | id | email            |
 +----+------------------+
@@ -101,7 +149,7 @@ SELECT
 FROM t_book
 ```
 
-查找是否存在的SQL语句和Java代码
+### 查找是否存在数据的SQL语句
 
 ```java
 //在Service层进行是否存在的判断的时候，如下
@@ -116,6 +164,32 @@ if ( exist != NULL ) {
 select 1 from students where ... limit 1;
 ```
 
+
+
+### 新增重复数据的替换操作
+
+如果发现表格的唯一索引存在相同的数据，那么就只会更新update，否则insert
+
+例如，存在唯一索引`idx_a_b(a, b)`。如果表中已经存在a=apple，b=1的数据，那么就只会update。
+
+如果最终是`insert`，那么返回的受影响的行值为1，如果是`update`操作，那么受影响的行值为2
+
+```mysql
+INSERT INTO sys_parameters(a, b, c,)
+values("apple", 1, 100)
+ON DUPLICATE KEY UPDATE
+ c=100
+```
+
+也可以使用`replace`来达到类似的效果，和上述不同的是，`replace`操作会删除原来的一行数据，再新增一行，因此自增的主键id会变化
+
+```mysql
+REPLACE INTO users (id,name,age) VALUES(123, ‘賈斯丁比伯‘, 22);
+```
+
+
+
+
 ### 参数配置
 
 每次事务的 redo log 都直接持久化到磁盘：`innodb_flush_log_at_trx_commit = 1`
@@ -125,70 +199,6 @@ select 1 from students where ... limit 1;
 change buffer 的大小最多只能占用 buffer pool 的 50%：`innodb_change_buffer_max_size= 50`
 
 存储引擎线程并发上限，如果为0则表示无限制：`innodb_thread_concurrency`
-
-### 新增和更新
-```mysql
-如果发现表的唯一索引存在相同的数据，那么就只会更新update，否则insert
-
-例子：存在唯一索引a和b。如果表中已经存在a=apple，b=1的数据，那么就只会update。
-对于insert，受影响的行值为1，对于update操作，则为2
-
-INSERT INTO sys_parameters
-(a, b, c,)
-values
-("apple", 1, 100)
-ON DUPLICATE KEY UPDATE
- c=100
-
-也可以使用
-REPLACE INTO users (id,name,age) VALUES(123, ‘賈斯丁比伯‘, 22);
-来达到类似的效果，但是其不好的地方在于如果是更新操作，那么其会删除原来的一行数据，再新增一行，而且自增id也会变化
-```
-
-### mysql Command
-```mysql
-// 创建数据库
-mysql> create database db_example; 
-// 创建用户
-mysql> create user 'springuser'@'%' identified by '123456'; 
-//授予权限-全部
-mysql> grant all on db_example.* to 'springuser'@'%'; 
-//撤销权限
-mysql> revoke all on db_example.* from 'springuser'@'%';
-//授予特定的权限
-mysql> grant select, insert, delete, update on db_example.* to 'springuser'@'%';
-
-查看表格的建表语句
-mysql> show create table <tablename>
-
-查看表的结构
-mysql> DESC <tablename>;
-
-删除表的所有数据
-truncate table student;
-
-查看MySQL的配置参数：
-show variables like 'wait_timeout';
-
-查看配置加载的顺序，即查看使用的哪个 my.cnf
-mysql --help | grep 'Default options' -A 1
-
-
-查看语句的执行情况
-`explain MySQL语句`
-
-强制优化器使用索引k
-`force index(k)`
-
-接下来的SQL语句都会记录到慢查询日志（slow log）中
-`set long_query_time=0`
-
-查看InnoDB存储引擎的状态
-show engine innodb status
-
-查看客户端的连接：
-`show PROCESSLIST;`
-```
 
 
 
@@ -203,3 +213,30 @@ mysql > show binlog events in 'master.000001';
 
 mysqlbinlog mysql-bin.00001 | more
 ```
+
+
+
+### 建表语句
+
+```mysql
+DROP TABLE IF EXISTS `mytest`;
+CREATE TABLE `mytest` (
+	  `id` int(11) NOT NULL AUTO_INCREMENT COMMENT '自增长id',
+    `text` varchar(255) DEFAULT '' COMMENT '内容',
+    `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `update_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+		PRIMARY KEY(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+
+
+DROP TABLE IF EXISTS `ygj_upload`;
+CREATE TABLE `ygj_upload` (
+	  `id` int(11) NOT NULL AUTO_INCREMENT COMMENT '自增长id',
+		`update_id` int(11) NOT NULL COMMENT '表的自增id',
+    `type` varchar(255) NOT NULL COMMENT '类型',
+    `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+		PRIMARY KEY(id),
+		KEY `update_id_type` (`update_id`, `type`) USING BTREE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COMMENT '保存待上传到云管家的数据';
+```
+
