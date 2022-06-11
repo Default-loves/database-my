@@ -20,7 +20,8 @@ public class Application {
     public void test() {
         log.info("simple use");
         JedisPool jedisPool = new JedisPool("127.0.0.1", 6379);
-        Jedis jedis = jedisPool.getResource();
-        jedis.set("food:001", "apple");
+        try(Jedis jedis = jedisPool.getResource()) {
+            jedis.set("food:001", "apple");
+        }
     }
 }

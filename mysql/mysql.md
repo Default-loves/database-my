@@ -1272,3 +1272,14 @@ InnoDB 内部维护了一个 max_trx_id 全局变量，每次需要申请一个�
 ### 数据库表名定义规范
 
 copy 结尾的是备份，flow 结尾的是流水，rel 结尾的是中间关联表，statistics 结尾的是数据统计表，log 结尾的是日志表，config 结尾的是配置表
+
+
+
+### in操作
+
+`in`元素一般建议不要超过`500`个，如果超过了，建议分组，每次`500`一组进行哈，即
+
+```mysql
+select user_id,name from user where user_id in (1,2,3...500);
+```
+
