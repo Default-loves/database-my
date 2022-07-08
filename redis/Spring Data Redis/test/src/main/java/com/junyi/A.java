@@ -31,7 +31,7 @@ public class A implements ApplicationRunner {
     @Override
     public void run(ApplicationArguments args) throws Exception {
         // test1();
-        test2();
+        test3();
     }
 
     private void test2() {
@@ -53,5 +53,19 @@ public class A implements ApplicationRunner {
         String str = stringRedisTemplate.opsForValue().get(key);
 
         log.info(str);
+    }
+
+    private void test3() {
+        ValueOperations<String, Object> valueOps = redisTemplate.opsForValue();
+        Article article = new Article();
+        article.setPrice(99);
+        article.setName("1145");
+        valueOps.set(article.getName(), article);
+
+        Object object = valueOps.get(article.getName());
+        log.info("type: {}", object.getClass());
+
+        Article article2 = (Article) object;
+        log.info("{}", article2.toString());
     }
 }

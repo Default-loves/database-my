@@ -219,6 +219,18 @@ mysqlbinlog mysql-bin.00001 | more
 ### 建表语句
 
 ```mysql
+CREATE TABLE IF NOT EXISTS `park_free` (
+	`id` BIGINT NOT NULL AUTO_INCREMENT,
+	`free_type` TINYINT not null comment '免费类型。1-每天、2-星期、3-自定义',
+    `free_context` varchar(800) DEFAULT '' COMMENT '免费内容',
+    `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+	`create_user` varchar(50) comment '创建人',
+    `modify_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+	`modify_user_name` varchar(50) comment '修改人',
+	PRIMARY KEY(`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+
+
 DROP TABLE IF EXISTS `mytest`;
 CREATE TABLE `mytest` (
 	  `id` int(11) NOT NULL AUTO_INCREMENT COMMENT '自增长id',
